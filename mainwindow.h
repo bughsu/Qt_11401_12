@@ -16,6 +16,11 @@
 #include <QLabel>
 #include <QProcess>
 #include <QSlider>
+#include <QTableWidget>
+#include <QCheckBox>
+#include <QSpinBox>
+#include "motiondetector.h"
+#include "eventlogger.h"
 
 // 自訂可點擊的 VideoWidget
 class ClickableVideoWidget : public QVideoWidget {
@@ -36,6 +41,8 @@ struct PlayerUnit {
     QAudioOutput *audioOutput;
     ClickableVideoWidget *videoWidget;
     QProcess *ffmpegProcess;
+    MotionDetector *motionDetector;  // 新增移動偵測器
+    QTimer *frameGrabTimer;          // 新增影格擷取計時器
 };
 
 class MainWindow : public QMainWindow {
@@ -56,6 +63,10 @@ private slots:
     void onOpenInExternalPlayer();      // 新增
     void onDeleteRecordedVideo();
     void updateTimeLabel();             // 新增
+    void onToggleMotionDetection(bool checked);  // 新增
+    void onMotionDetected(PlayerUnit* unit, double motionLevel, const QImage &frame);  // 新增
+    void refreshEventLog();             // 新增
+    void onClearEventLog();             // 新增
 
 private:
     void setupUi();
@@ -76,6 +87,13 @@ private:
     // 檔案管理相關
     QWidget *m_managerPage;
     QListWidget *m_fileListWidget;
+
+    // 事件日誌相關 (新增)
+    EventLogger *m_eventLogger;
+    QTableWidget *m_eventLogTable;
+    QPushButton *m_motionDetectBtn;
+    QCheckBox *m_autoRecordOnMotion;
+    QSpinBox *m_motionThresholdSpinBox;
 
     // 內建播放器相關 (新增)
     QMediaPlayer *m_playbackPlayer;

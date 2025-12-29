@@ -1,4 +1,6 @@
 #include "mainwindow.h"
+#include "motiondetector.h"
+#include "eventlogger.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QInputDialog>
@@ -13,11 +15,17 @@
 #include <QFileInfo>
 #include <QDebug>
 #include <QThread>
+#include <QVideoSink>
+#include <QVideoFrame>
+#include <QHeaderView>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+    // 初始化事件日誌
+    m_eventLogger = new EventLogger();
+
     setupUi();
     resize(1200, 800);
-    setWindowTitle("Qt6 專業多路監控錄影系統");
+    setWindowTitle("Qt6 專業多路監控錄影系統 - 智慧移動偵測");
 
     // 啟動時檢查 FFmpeg
     QTimer::singleShot(500, this, [this](){
@@ -37,7 +45,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    // 清理播放器單元
+    for (PlayerUnit *unit : m_playerUnits) {
+        if (unit->frameGrabTimer) {
+            unit->frameGrabTimer->stop();
+            delete unit->frameGrabTimer;
+        }
+        if (unit->motionDetector) {
+            delete unit->motionDetector;
+        }
+    }
     qDeleteAll(m_playerUnits);
+    
+    // 清理事件日誌
+    delete m_eventLogger;
 }
 
 void MainWindow::setupUi() {
@@ -62,7 +83,32 @@ void MainWindow::setupUi() {
     m_globalProgressBar->setVisible(false);
     m_globalProgressBar->setTextVisible(false);
 
+    // 移動偵測控制 (新增)
+    m_motionDetectBtn = new QPushButton("啟用移動偵測");
+    m_motionDetectBtn->setCheckable(true);
+    m_motionDetectBtn->setMinimumHeight(50);
+    m_motionDetectBtn->setStyleSheet("QPushButton:checked { background-color: #4CAF50; color: white; }");
+
+    QWidget *motionControlPanel = new QWidget();
+    QVBoxLayout *motionLayout = new QVBoxLayout(motionControlPanel);
+    motionLayout->setContentsMargins(5, 5, 5, 5);
+
+    QLabel *thresholdLabel = new QLabel("靈敏度 (%):");
+    m_motionThresholdSpinBox = new QSpinBox();
+    m_motionThresholdSpinBox->setRange(1, 10);
+    m_motionThresholdSpinBox->setValue(2);
+    m_motionThresholdSpinBox->setSuffix("%");
+    m_motionThresholdSpinBox->setToolTip("畫面變化超過此百分比時觸發移動偵測");
+
+    m_autoRecordOnMotion = new QCheckBox("偵測到移動時自動錄影");
+    m_autoRecordOnMotion->setToolTip("當偵測到移動時，自動開始錄影");
+
+    motionLayout->addWidget(thresholdLabel);
+    motionLayout->addWidget(m_motionThresholdSpinBox);
+    motionLayout->addWidget(m_autoRecordOnMotion);
+
     QPushButton *mgrBtn = new QPushButton("檔案管理");
+    QPushButton *eventLogBtn = new QPushButton("事件日誌");  // 新增
 
     leftLayout->addWidget(new QLabel("設備清單:"));
     leftLayout->addWidget(m_streamList);
@@ -72,7 +118,12 @@ void MainWindow::setupUi() {
     leftLayout->addSpacing(20);
     leftLayout->addWidget(m_recordBtn);
     leftLayout->addWidget(m_globalProgressBar);
+    leftLayout->addSpacing(20);
+    leftLayout->addWidget(new QLabel("智慧移動偵測:"));
+    leftLayout->addWidget(m_motionDetectBtn);
+    leftLayout->addWidget(motionControlPanel);
     leftLayout->addStretch();
+    leftLayout->addWidget(eventLogBtn);  // 新增
     leftLayout->addWidget(mgrBtn);
     leftPanel->setFixedWidth(200);
 
@@ -156,6 +207,34 @@ void MainWindow::setupUi() {
     manLayout->addWidget(backBtn);
     m_stackedWidget->addWidget(m_managerPage);
 
+    // 頁面 3: 事件日誌 (新增)
+    QWidget *eventLogPage = new QWidget();
+    QVBoxLayout *eventLogLayout = new QVBoxLayout(eventLogPage);
+
+    m_eventLogTable = new QTableWidget();
+    m_eventLogTable->setColumnCount(5);
+    m_eventLogTable->setHorizontalHeaderLabels({"時間", "類型", "串流來源", "說明", "移動強度"});
+    m_eventLogTable->horizontalHeader()->setStretchLastSection(true);
+    m_eventLogTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_eventLogTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_eventLogTable->setAlternatingRowColors(true);
+    m_eventLogTable->setSortingEnabled(true);
+
+    QHBoxLayout *eventBtnLayout = new QHBoxLayout();
+    QPushButton *refreshEventBtn = new QPushButton("重新整理");
+    QPushButton *clearEventBtn = new QPushButton("清除所有記錄");
+    QPushButton *backFromEventBtn = new QPushButton("返回監控畫面");
+
+    eventBtnLayout->addWidget(refreshEventBtn);
+    eventBtnLayout->addWidget(clearEventBtn);
+    eventBtnLayout->addStretch();
+
+    eventLogLayout->addWidget(new QLabel("事件日誌記錄:"));
+    eventLogLayout->addWidget(m_eventLogTable);
+    eventLogLayout->addLayout(eventBtnLayout);
+    eventLogLayout->addWidget(backFromEventBtn);
+    m_stackedWidget->addWidget(eventLogPage);
+
     mainLayout->addWidget(leftPanel);
     mainLayout->addWidget(m_stackedWidget);
 
@@ -221,6 +300,30 @@ void MainWindow::setupUi() {
     connect(m_focusVideoWidget, &ClickableVideoWidget::clicked, this, [this](){
         if (m_currentFocusedUnit) toggleFocus(m_currentFocusedUnit);
     });
+
+    // 移動偵測相關連接 (新增)
+    connect(m_motionDetectBtn, &QPushButton::toggled, this, &MainWindow::onToggleMotionDetection);
+
+    connect(m_motionThresholdSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value){
+        double threshold = value / 100.0;
+        for (PlayerUnit* unit : m_playerUnits) {
+            if (unit->motionDetector) {
+                unit->motionDetector->setMotionThreshold(threshold);
+            }
+        }
+    });
+
+    // 事件日誌相關連接 (新增)
+    connect(eventLogBtn, &QPushButton::clicked, this, [this](){
+        refreshEventLog();
+        m_stackedWidget->setCurrentIndex(3);
+    });
+
+    connect(refreshEventBtn, &QPushButton::clicked, this, &MainWindow::refreshEventLog);
+    connect(clearEventBtn, &QPushButton::clicked, this, &MainWindow::onClearEventLog);
+    connect(backFromEventBtn, &QPushButton::clicked, this, [this](){
+        m_stackedWidget->setCurrentIndex(0);
+    });
 }
 
 void MainWindow::onPlaySelectedLive() {
@@ -243,6 +346,43 @@ void MainWindow::onPlaySelectedLive() {
     unit->ffmpegProcess = nullptr;
     unit->recordingFilePath = "";
 
+    // 初始化移動偵測器 (新增)
+    unit->motionDetector = new MotionDetector(this);
+    unit->motionDetector->setMotionThreshold(m_motionThresholdSpinBox->value() / 100.0);
+
+    // 建立影格擷取計時器 (新增)
+    unit->frameGrabTimer = new QTimer(this);
+    
+    // 連接移動偵測信號
+    connect(unit->motionDetector, &MotionDetector::motionDetected, this, 
+            [this, unit](double motionLevel, const QImage &frame){
+        onMotionDetected(unit, motionLevel, frame);
+    });
+
+    // 使用計時器定期擷取影格進行分析（每500ms一次）
+    // 注意：頻率已優化以平衡偵測效能和 CPU 使用率
+    // 若需更高偵測精度，可降低至 250ms；若需降低 CPU 使用，可提高至 1000ms
+    connect(unit->frameGrabTimer, &QTimer::timeout, this, [this, unit](){
+        if (unit->motionDetector && unit->motionDetector->isEnabled()) {
+            QVideoSink *videoSink = unit->videoWidget->videoSink();
+            if (videoSink) {
+                QVideoFrame frame = videoSink->videoFrame();
+                if (frame.isValid()) {
+                    QImage image = frame.toImage();
+                    if (!image.isNull()) {
+                        unit->motionDetector->processFrame(image);
+                    }
+                }
+            }
+        }
+    });
+
+    // 如果移動偵測已啟用，立即啟動
+    if (m_motionDetectBtn->isChecked()) {
+        unit->motionDetector->setEnabled(true);
+        unit->frameGrabTimer->start(500);  // 每500ms擷取一次影格
+    }
+
     unit->videoWidget->setMinimumSize(320, 180);
     unit->videoWidget->setStyleSheet("background: black; border: 2px solid #333;");
 
@@ -254,6 +394,10 @@ void MainWindow::onPlaySelectedLive() {
     int idx = m_playerUnits.size() - 1;
     m_gridLayout->addWidget(unit->videoWidget, idx / 3, idx % 3);
     unit->player->play();
+
+    // 記錄事件
+    m_eventLogger->logEvent(EventType::StreamConnected, unit->streamUrl, 
+                            "串流連接成功");
 }
 
 void MainWindow::onToggleGlobalRecording(bool checked) {
@@ -418,6 +562,10 @@ void MainWindow::onToggleGlobalRecording(bool checked) {
         m_globalProgressBar->setVisible(true);
         m_globalProgressBar->setRange(0, 0);
 
+        // 記錄錄影開始事件
+        m_eventLogger->logEvent(EventType::RecordingStarted, "系統", 
+                                QString("開始錄影 %1 路串流").arg(successCount));
+
     } else {
         // 停止錄影
         qDebug() << "停止錄影...";
@@ -464,6 +612,10 @@ void MainWindow::onToggleGlobalRecording(bool checked) {
         m_recordBtn->setText("開啟全域錄影");
         m_recordBtn->setStyleSheet("");
         m_globalProgressBar->setVisible(false);
+
+        // 記錄錄影停止事件
+        m_eventLogger->logEvent(EventType::RecordingStopped, "系統", 
+                                QString("錄影已停止，共儲存 %1 個檔案").arg(savedFiles.size()));
 
         // 顯示結果
         if (savedFiles.isEmpty()) {
@@ -516,6 +668,18 @@ void MainWindow::onDeleteCamera() {
         unit->ffmpegProcess->waitForFinished(2000);
         unit->ffmpegProcess->kill();
     }
+
+    // 停止移動偵測
+    if (unit->frameGrabTimer) {
+        unit->frameGrabTimer->stop();
+        delete unit->frameGrabTimer;
+    }
+    if (unit->motionDetector) {
+        delete unit->motionDetector;
+    }
+
+    // 記錄事件
+    m_eventLogger->logEvent(EventType::StreamDisconnected, unit->streamUrl, "串流已移除");
 
     unit->player->stop();
     m_gridLayout->removeWidget(unit->videoWidget);
@@ -657,5 +821,105 @@ void MainWindow::onDeleteRecordedVideo() {
         } else {
             QMessageBox::warning(this, "錯誤", "刪除失敗！檔案可能正在使用中。");
         }
+    }
+}
+
+void MainWindow::onToggleMotionDetection(bool checked) {
+    if (m_playerUnits.isEmpty() && checked) {
+        QMessageBox::warning(this, "警告", "請先新增並播放至少一個串流來源！");
+        m_motionDetectBtn->setChecked(false);
+        return;
+    }
+
+    // 啟用/停用所有串流的移動偵測
+    for (PlayerUnit* unit : m_playerUnits) {
+        if (unit->motionDetector) {
+            unit->motionDetector->setEnabled(checked);
+        }
+        if (unit->frameGrabTimer) {
+            if (checked) {
+                unit->frameGrabTimer->start(500);  // 每500ms擷取一次影格
+            } else {
+                unit->frameGrabTimer->stop();
+            }
+        }
+    }
+
+    if (checked) {
+        m_motionDetectBtn->setText("停用移動偵測");
+        m_eventLogger->logEvent(EventType::MotionDetectionEnabled, "系統", "移動偵測已啟用");
+    } else {
+        m_motionDetectBtn->setText("啟用移動偵測");
+        m_eventLogger->logEvent(EventType::MotionDetectionDisabled, "系統", "移動偵測已停用");
+    }
+}
+
+void MainWindow::onMotionDetected(PlayerUnit* unit, double motionLevel, const QImage &frame) {
+    QString description = QString("偵測到移動 (強度: %1%)").arg(motionLevel * 100, 0, 'f', 2);
+    
+    // 記錄事件
+    m_eventLogger->logEvent(EventType::MotionDetected, unit->streamUrl, description, motionLevel);
+
+    // 如果啟用了自動錄影功能且目前沒有在錄影
+    if (m_autoRecordOnMotion->isChecked() && !m_recordBtn->isChecked()) {
+        qDebug() << "移動偵測觸發自動錄影";
+        m_recordBtn->setChecked(true);
+    }
+
+    // 可選：保存快照
+    QString snapshotPath = getRecordingsPath() + "/snapshot_" + 
+                           QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".jpg";
+    frame.save(snapshotPath, "JPEG");
+    qDebug() << "已保存移動偵測快照:" << snapshotPath;
+}
+
+void MainWindow::refreshEventLog() {
+    m_eventLogTable->setRowCount(0);
+    
+    QList<EventRecord> events = m_eventLogger->getAllEvents();
+    
+    // 倒序顯示（最新的在最上面）
+    for (int i = events.size() - 1; i >= 0; --i) {
+        const EventRecord &record = events[i];
+        
+        int row = m_eventLogTable->rowCount();
+        m_eventLogTable->insertRow(row);
+        
+        // 時間
+        m_eventLogTable->setItem(row, 0, new QTableWidgetItem(
+            record.timestamp.toString("yyyy-MM-dd HH:mm:ss")));
+        
+        // 類型
+        QTableWidgetItem *typeItem = new QTableWidgetItem(record.getTypeString());
+        if (record.type == EventType::MotionDetected) {
+            typeItem->setBackground(QBrush(QColor(255, 200, 200)));  // 淺紅色
+        }
+        m_eventLogTable->setItem(row, 1, typeItem);
+        
+        // 串流來源
+        m_eventLogTable->setItem(row, 2, new QTableWidgetItem(record.streamUrl));
+        
+        // 說明
+        m_eventLogTable->setItem(row, 3, new QTableWidgetItem(record.description));
+        
+        // 移動強度
+        QString motionStr = record.motionLevel > 0 ? 
+            QString("%1%").arg(record.motionLevel * 100, 0, 'f', 2) : "-";
+        m_eventLogTable->setItem(row, 4, new QTableWidgetItem(motionStr));
+    }
+    
+    // 自動調整列寬
+    m_eventLogTable->resizeColumnsToContents();
+}
+
+void MainWindow::onClearEventLog() {
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "確認清除",
+        "確定要清除所有事件記錄嗎？\n\n此操作無法復原！",
+        QMessageBox::Yes | QMessageBox::No);
+    
+    if (reply == QMessageBox::Yes) {
+        m_eventLogger->clearEvents();
+        refreshEventLog();
+        QMessageBox::information(this, "成功", "事件記錄已清除！");
     }
 }

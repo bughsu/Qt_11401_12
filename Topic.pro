@@ -13,7 +13,23 @@ LIBS += -L$${FFMPEG_PATH}/lib \
         -lswscale \
         -lswresample
 
-SOURCES += main.cpp \
-           mainwindow.cpp
+# OpenCV 配置
+OPENCV_PATH = "C:/opencv/build"
 
-HEADERS += mainwindow.h
+INCLUDEPATH += $${OPENCV_PATH}/include
+
+LIBS += -L$${OPENCV_PATH}/x64/vc16/lib \
+        -lopencv_core4100 \
+        -lopencv_imgproc4100 \
+        -lopencv_video4100 \
+        -lopencv_videoio4100 \
+        -lopencv_imgcodecs4100
+
+SOURCES += main.cpp \
+           mainwindow.cpp \
+           motiondetector.cpp \
+           eventlogger.cpp
+
+HEADERS += mainwindow.h \
+           motiondetector.h \
+           eventlogger.h

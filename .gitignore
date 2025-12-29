@@ -39,3 +39,19 @@
 
 # debug information files
 *.dwo
+
+# Qt files
+*.pro.user
+*.pro.user.*
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+Makefile*
+*build-*
+*.qm
+.qmake.stash
+
+# Recordings and logs
+recordings/
+logs/
+snapshots/
