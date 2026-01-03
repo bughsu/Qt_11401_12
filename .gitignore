@@ -55,3 +55,6 @@ Makefile*
 recordings/
 logs/
 snapshots/
+.qtc_clangd/
+build/
+debug/
