@@ -1,0 +1,1 @@
+ffmpeg -f dshow -i video="ACER HD User Facing" -preset ultrafast -vcodec libx264 -f rtsp rtsp://127.0.0.1:8554/live

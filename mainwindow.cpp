@@ -329,11 +329,16 @@ void MainWindow::setupUi() {
 void MainWindow::onPlaySelectedLive() {
     QListWidgetItem *item = m_streamList->currentItem();
     if (!item) return;
-
     PlayerUnit* unit = new PlayerUnit();
-    unit->streamUrl = item->text();
+
+    // 防止重複添加相同串流
+    if (!m_playerUnits.isEmpty())
+        for(PlayerUnit* a : m_playerUnits)
+            if(a -> streamUrl == item->text())
+                return;
 
     // 播放用的 Player
+    unit->streamUrl = item->text();
     unit->player = new QMediaPlayer(this);
     unit->audioOutput = new QAudioOutput(this);
     unit->videoWidget = new ClickableVideoWidget();
@@ -660,7 +665,21 @@ void MainWindow::toggleFocus(PlayerUnit* unit) {
 
 void MainWindow::onDeleteCamera() {
     if (m_playerUnits.isEmpty()) return;
-    PlayerUnit* unit = m_playerUnits.takeLast();
+    // PlayerUnit* unit = m_playerUnits.takeLast();
+    PlayerUnit* unit = nullptr;
+
+    // 找到對應的 PlayerUnit
+    for(PlayerUnit* a : m_playerUnits)
+    {
+        if(a -> streamUrl == m_streamList->currentItem()->text())
+        {
+            unit = a;
+            break;
+        }
+    }
+
+    // 如果沒找到就返回
+    if(unit == nullptr) return;
 
     // 停止錄影
     if (unit->ffmpegProcess && unit->ffmpegProcess->state() == QProcess::Running) {
@@ -684,6 +703,7 @@ void MainWindow::onDeleteCamera() {
     unit->player->stop();
     m_gridLayout->removeWidget(unit->videoWidget);
     unit->videoWidget->deleteLater();
+    m_playerUnits.removeOne(unit);
     delete unit;
 }
 
