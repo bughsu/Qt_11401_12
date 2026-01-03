@@ -28,8 +28,10 @@ LIBS += -L$${OPENCV_PATH}/x64/vc16/lib \
 SOURCES += main.cpp \
            mainwindow.cpp \
            motiondetector.cpp \
-           eventlogger.cpp
+           eventlogger.cpp \
+           webserver.cpp
 
 HEADERS += mainwindow.h \
            motiondetector.h \
-           eventlogger.h
+           eventlogger.h \
+           webserver.h

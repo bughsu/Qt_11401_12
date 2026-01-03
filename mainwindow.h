@@ -21,6 +21,7 @@
 #include <QSpinBox>
 #include "motiondetector.h"
 #include "eventlogger.h"
+#include "webserver.h"
 
 // 自訂可點擊的 VideoWidget
 class ClickableVideoWidget : public QVideoWidget {
@@ -67,6 +68,9 @@ private slots:
     void onMotionDetected(PlayerUnit* unit, double motionLevel, const QImage &frame);  // 新增
     void refreshEventLog();             // 新增
     void onClearEventLog();             // 新增
+    void onToggleWebServer(bool checked);  // Web Server 控制
+    void onWebServerStarted(quint16 port);
+    void onWebServerError(const QString &errorString);
 
 private:
     void setupUi();
@@ -104,6 +108,11 @@ private:
     QSlider *m_positionSlider;
     QSlider *m_volumeSlider;
     QLabel *m_timeLabel;
+
+    // Web Server 相關
+    WebServer *m_webServer;
+    QPushButton *m_webServerBtn;
+    QLabel *m_webServerUrlLabel;
 };
 
 #endif // MAINWINDOW_H
