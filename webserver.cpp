@@ -4,6 +4,10 @@
 #include <QHostAddress>
 #include <QNetworkInterface>
 #include <QDebug>
+#include <QMutableListIterator>
+
+// MJPEG 串流邊界字串
+static const QByteArray BOUNDARY = "--boundary";
 
 WebServer::WebServer(QObject *parent)
     : QObject(parent)
@@ -192,7 +196,7 @@ void WebServer::sendMjpegStream(QTcpSocket *socket)
 {
     // 發送 MJPEG 串流的 HTTP 標頭
     QByteArray header = "HTTP/1.1 200 OK\r\n"
-                        "Content-Type: multipart/x-mixed-replace; boundary=--boundary\r\n"
+                        "Content-Type: multipart/x-mixed-replace; boundary=" + BOUNDARY + "\r\n"
                         "Cache-Control: no-cache\r\n"
                         "Connection: keep-alive\r\n\r\n";
     socket->write(header);
@@ -289,7 +293,7 @@ void WebServer::sendFrameToClients()
 
     // 建立 MJPEG 格式的影格資料
     QByteArray frameData;
-    frameData.append("--boundary\r\n");
+    frameData.append(BOUNDARY + "\r\n");
     frameData.append("Content-Type: image/jpeg\r\n");
     frameData.append("Content-Length: " + QByteArray::number(jpegData.size()) + "\r\n\r\n");
     frameData.append(jpegData);
@@ -301,8 +305,13 @@ void WebServer::sendFrameToClients()
         QTcpSocket *socket = it.next();
         if (socket->state() == QAbstractSocket::ConnectedState) {
             qint64 written = socket->write(frameData);
-            if (written == -1) {
-                qDebug() << "發送影格失敗:" << socket->errorString();
+            // 檢查寫入錯誤或部分寫入
+            if (written == -1 || written < frameData.size()) {
+                if (written == -1) {
+                    qDebug() << "發送影格失敗:" << socket->errorString();
+                } else {
+                    qDebug() << "警告：部分寫入，預期" << frameData.size() << "位元組，實際寫入" << written << "位元組";
+                }
                 it.remove();
                 socket->deleteLater();
             } else {

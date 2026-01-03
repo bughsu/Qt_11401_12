@@ -406,7 +406,7 @@ void MainWindow::onPlaySelectedLive() {
                     // 更新 Web Server 的影格（僅對焦點單元或第一個單元）
                     if (m_webServer->isRunning()) {
                         if (unit == m_currentFocusedUnit || 
-                            (m_currentFocusedUnit == nullptr && m_playerUnits.indexOf(unit) == 0)) {
+                            (m_currentFocusedUnit == nullptr && !m_playerUnits.isEmpty() && unit == m_playerUnits.first())) {
                             m_webServer->updateFrame(image);
                         }
                     }
