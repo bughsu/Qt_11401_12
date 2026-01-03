@@ -21,7 +21,7 @@
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // 初始化事件日誌
-    m_eventLogger = new EventLogger();
+    m_eventLogger = new EventLogger(this);
 
     setupUi();
     resize(1200, 800);

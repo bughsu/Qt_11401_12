@@ -3,7 +3,7 @@
 #include <QDir>
 #include <QDebug>
 
-EventLogger::EventLogger() : m_needsSave(false) {
+EventLogger::EventLogger(QObject *parent) : QObject(parent), m_needsSave(false) {
     // 設定日誌檔案路徑
     QString appDir = QCoreApplication::applicationDirPath();
     QDir().mkpath(appDir + "/logs");

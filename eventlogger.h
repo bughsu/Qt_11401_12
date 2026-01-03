@@ -1,6 +1,7 @@
 #ifndef EVENTLOGGER_H
 #define EVENTLOGGER_H
 
+#include <QObject>
 #include <QString>
 #include <QDateTime>
 #include <QList>
@@ -70,9 +71,10 @@ struct EventRecord {
 };
 
 // 事件日誌管理器
-class EventLogger {
+class EventLogger : public QObject {
+    Q_OBJECT
 public:
-    EventLogger();
+    explicit EventLogger(QObject *parent = nullptr);
     ~EventLogger();
 
     // 記錄事件
