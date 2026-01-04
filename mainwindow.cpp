@@ -23,9 +23,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // 初始化事件日誌
     m_eventLogger = new EventLogger();
 
+    // 初始化 Web Server
+    m_webServer = new WebServer(this);
+    connect(m_webServer, &WebServer::serverStarted, this, &MainWindow::onWebServerStarted);
+    connect(m_webServer, &WebServer::error, this, &MainWindow::onWebServerError);
+
     setupUi();
     resize(1200, 800);
-    setWindowTitle("Qt6 專業多路監控錄影系統 - 智慧移動偵測");
+    setWindowTitle("Qt6 專業多路監控錄影系統 - 智慧移動偵測 + 遠端監看");
 
     // 啟動時檢查 FFmpeg
     QTimer::singleShot(500, this, [this](){
@@ -45,6 +50,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    // 停止 Web Server
+    if (m_webServer) {
+        m_webServer->stop();
+    }
+
     // 清理播放器單元
     for (PlayerUnit *unit : m_playerUnits) {
         if (unit->frameGrabTimer) {
@@ -110,6 +120,18 @@ void MainWindow::setupUi() {
     QPushButton *mgrBtn = new QPushButton("檔案管理");
     QPushButton *eventLogBtn = new QPushButton("事件日誌");  // 新增
 
+    // Web Server 控制 (新增)
+    m_webServerBtn = new QPushButton("啟用遠端監看");
+    m_webServerBtn->setCheckable(true);
+    m_webServerBtn->setMinimumHeight(50);
+    m_webServerBtn->setStyleSheet("QPushButton:checked { background-color: #2196F3; color: white; }");
+    m_webServerBtn->setToolTip("啟用後可透過手機瀏覽器遠端監看");
+    
+    m_webServerUrlLabel = new QLabel("遠端監看未啟用");
+    m_webServerUrlLabel->setWordWrap(true);
+    m_webServerUrlLabel->setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 5px; background-color: #f5f5f5; border-radius: 3px; }");
+    m_webServerUrlLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
     leftLayout->addWidget(new QLabel("設備清單:"));
     leftLayout->addWidget(m_streamList);
     leftLayout->addWidget(addBtn);
@@ -122,6 +144,10 @@ void MainWindow::setupUi() {
     leftLayout->addWidget(new QLabel("智慧移動偵測:"));
     leftLayout->addWidget(m_motionDetectBtn);
     leftLayout->addWidget(motionControlPanel);
+    leftLayout->addSpacing(20);
+    leftLayout->addWidget(new QLabel("遠端 Web 監看:"));
+    leftLayout->addWidget(m_webServerBtn);
+    leftLayout->addWidget(m_webServerUrlLabel);
     leftLayout->addStretch();
     leftLayout->addWidget(eventLogBtn);  // 新增
     leftLayout->addWidget(mgrBtn);
@@ -313,6 +339,9 @@ void MainWindow::setupUi() {
         }
     });
 
+    // Web Server 相關連接 (新增)
+    connect(m_webServerBtn, &QPushButton::toggled, this, &MainWindow::onToggleWebServer);
+
     // 事件日誌相關連接 (新增)
     connect(eventLogBtn, &QPushButton::clicked, this, [this](){
         refreshEventLog();
@@ -368,23 +397,34 @@ void MainWindow::onPlaySelectedLive() {
     // 注意：頻率已優化以平衡偵測效能和 CPU 使用率
     // 若需更高偵測精度，可降低至 250ms；若需降低 CPU 使用，可提高至 1000ms
     connect(unit->frameGrabTimer, &QTimer::timeout, this, [this, unit](){
-        if (unit->motionDetector && unit->motionDetector->isEnabled()) {
-            QVideoSink *videoSink = unit->videoWidget->videoSink();
-            if (videoSink) {
-                QVideoFrame frame = videoSink->videoFrame();
-                if (frame.isValid()) {
-                    QImage image = frame.toImage();
-                    if (!image.isNull()) {
+        QVideoSink *videoSink = unit->videoWidget->videoSink();
+        if (videoSink) {
+            QVideoFrame frame = videoSink->videoFrame();
+            if (frame.isValid()) {
+                QImage image = frame.toImage();
+                if (!image.isNull()) {
+                    // 移動偵測處理
+                    if (unit->motionDetector && unit->motionDetector->isEnabled()) {
                         unit->motionDetector->processFrame(image);
+                    }
+                    
+                    // 更新 Web Server 的影格（僅對焦點單元或第一個單元）
+                    if (m_webServer->isRunning()) {
+                        if (unit == m_currentFocusedUnit || 
+                            (m_currentFocusedUnit == nullptr && !m_playerUnits.isEmpty() && unit == m_playerUnits.first())) {
+                            m_webServer->updateFrame(image);
+                        }
                     }
                 }
             }
         }
     });
 
-    // 如果移動偵測已啟用，立即啟動
-    if (m_motionDetectBtn->isChecked()) {
-        unit->motionDetector->setEnabled(true);
+    // 如果移動偵測或 Web Server 已啟用，立即啟動影格擷取
+    if (m_motionDetectBtn->isChecked() || m_webServer->isRunning()) {
+        if (m_motionDetectBtn->isChecked()) {
+            unit->motionDetector->setEnabled(true);
+        }
         unit->frameGrabTimer->start(500);  // 每500ms擷取一次影格
     }
 
@@ -857,7 +897,9 @@ void MainWindow::onToggleMotionDetection(bool checked) {
             unit->motionDetector->setEnabled(checked);
         }
         if (unit->frameGrabTimer) {
-            if (checked) {
+            // 只要移動偵測或 Web Server 有任一啟用，就需要抓取影格
+            bool needFrameGrabbing = checked || m_webServer->isRunning();
+            if (needFrameGrabbing) {
                 unit->frameGrabTimer->start(500);  // 每500ms擷取一次影格
             } else {
                 unit->frameGrabTimer->stop();
@@ -942,4 +984,72 @@ void MainWindow::onClearEventLog() {
         refreshEventLog();
         QMessageBox::information(this, "成功", "事件記錄已清除！");
     }
+}
+
+void MainWindow::onToggleWebServer(bool checked) {
+    if (checked) {
+        // 啟用 Web Server
+        if (m_playerUnits.isEmpty()) {
+            QMessageBox::warning(this, "警告", "請先新增並播放至少一個串流來源！");
+            m_webServerBtn->setChecked(false);
+            return;
+        }
+
+        bool success = m_webServer->start(8080);
+        if (!success) {
+            m_webServerBtn->setChecked(false);
+            return;
+        }
+
+        // 啟動影格擷取（如果尚未啟動）
+        for (PlayerUnit* unit : m_playerUnits) {
+            if (unit->frameGrabTimer && !unit->frameGrabTimer->isActive()) {
+                unit->frameGrabTimer->start(500);
+            }
+        }
+
+        // 記錄事件
+        m_eventLogger->logEvent(EventType::StreamConnected, "Web Server", 
+                                QString("遠端監看已啟用於 %1").arg(m_webServer->serverUrl()));
+        
+        qDebug() << "Web Server 已啟用";
+    } else {
+        // 停用 Web Server
+        m_webServer->stop();
+
+        // 如果移動偵測也未啟用，停止影格擷取
+        if (!m_motionDetectBtn->isChecked()) {
+            for (PlayerUnit* unit : m_playerUnits) {
+                if (unit->frameGrabTimer) {
+                    unit->frameGrabTimer->stop();
+                }
+            }
+        }
+
+        // 記錄事件
+        m_eventLogger->logEvent(EventType::StreamDisconnected, "Web Server", "遠端監看已停用");
+        
+        // 更新 UI
+        m_webServerUrlLabel->setText("遠端監看未啟用");
+        m_webServerUrlLabel->setStyleSheet("QLabel { color: #666; font-size: 11px; padding: 5px; background-color: #f5f5f5; border-radius: 3px; }");
+
+        qDebug() << "Web Server 已停用";
+    }
+}
+
+void MainWindow::onWebServerStarted(quint16 port) {
+    QString url = m_webServer->serverUrl();
+    m_webServerUrlLabel->setText(QString("網址: %1\n\n用手機掃描此 QR Code 或\n直接輸入網址瀏覽").arg(url));
+    m_webServerUrlLabel->setStyleSheet("QLabel { color: #2196F3; font-size: 11px; padding: 5px; background-color: #E3F2FD; border-radius: 3px; font-weight: bold; }");
+    
+    QMessageBox::information(this, "遠端監看已啟用",
+                             QString("Web Server 已啟動！\n\n"
+                                     "請在手機或平板的瀏覽器中輸入：\n%1\n\n"
+                                     "即可即時觀看監控畫面。\n\n"
+                                     "提示：請確保手機與電腦在同一個網路中。").arg(url));
+}
+
+void MainWindow::onWebServerError(const QString &errorString) {
+    QMessageBox::critical(this, "Web Server 錯誤", errorString);
+    m_webServerBtn->setChecked(false);
 }
